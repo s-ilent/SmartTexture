@@ -1,0 +1,56 @@
+﻿//
+
+Texture2D<float4> _RedMap;
+Texture2D<float4> _GreenMap;
+Texture2D<float4> _BlueMap;
+Texture2D<float4> _AlphaMap;
+
+float4 _RedChannelParams;
+float4 _GreenChannelParams;
+float4 _BlueChannelParams;
+float4 _AlphaChannelParams;
+        
+RWTexture2D<float4> _Output;
+float4 _OutputSize;
+
+sampler sampler_point_clamp;
+
+float MapSourceToChannel(float4 source, float channelOrParam, float2 remap)
+{
+     // Invert?
+    if (channelOrParam < 0)
+    {
+        channelOrParam = -channelOrParam; // reset
+        source = float4(1, 1, 1, 1) - source;
+    }
+
+    float output;
+    
+    // Use luminance?
+    if (channelOrParam >= 5)
+        output = source.r * 0.3 + source.g * 0.59 + source.b * 0.11; // Photoshop desaturation : G*.59+R*.3+B*.11
+    else
+        output = source[channelOrParam-1];
+
+    return output * (remap.y - remap.x) + remap.x;
+}
+    
+#pragma kernel PackChannelsCS THREADGROUP_SIZE=8
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
+void PackChannelsCS(uint2 id : SV_DispatchThreadID)
+{
+    const uint2 size = (uint2)_OutputSize.xy;
+    if (id.x >= size.x || id.y >= size.y)
+        return;
+
+    float2 sv = id + 0.5;
+    float2 uv = sv * _OutputSize.zw;
+    
+    float4 color = float4(0, 0, 0, 0);
+    color.r = MapSourceToChannel(_RedMap.SampleLevel(sampler_point_clamp, uv, 0),   _RedChannelParams.x,   _RedChannelParams.yz);
+    color.g = MapSourceToChannel(_GreenMap.SampleLevel(sampler_point_clamp, uv, 0), _GreenChannelParams.x, _GreenChannelParams.yz);
+    color.b = MapSourceToChannel(_BlueMap.SampleLevel(sampler_point_clamp, uv, 0),  _BlueChannelParams.x,  _BlueChannelParams.yz);
+    color.a = MapSourceToChannel(_AlphaMap.SampleLevel(sampler_point_clamp, uv, 0), _AlphaChannelParams.x, _AlphaChannelParams.yz);
+    
+    _Output[id] = color;
+}

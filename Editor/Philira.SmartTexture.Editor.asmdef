@@ -1,8 +1,9 @@
 {
     "name": "Phillira.SmartTexture.Editor",
     "references": [
-        "GUID:9e705d6a72d9a354b810376671ddb3ac"
+        "Philira.SmartTexture.Runtime"
     ],
+    "optionalUnityReferences": [],
     "includePlatforms": [
         "Editor"
     ],
@@ -11,7 +12,5 @@
     "overrideReferences": true,
     "precompiledReferences": [],
     "autoReferenced": false,
-    "defineConstraints": [],
-    "versionDefines": [],
-    "noEngineReferences": false
+    "defineConstraints": []
 }

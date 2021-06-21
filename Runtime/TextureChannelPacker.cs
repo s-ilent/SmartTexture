@@ -1,61 +1,97 @@
-﻿using UnityEngine;
-using UnityEngine.Rendering;
+﻿using System;
+using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 
-// TODO: Add option to pack using compute shader
 // TODO: Convert from sRGB to linear color space if necessary.
 // TODO: Texture compression / Format
-// TODO: Mipmaps
 
-[System.Serializable]
+[Serializable]
+public enum TextureChannel
+{
+    Red = 0,
+    Green = 1,
+    Blue = 2,
+    Alpha = 3
+}
+
+[Serializable, Flags]
+public enum TextureChannelMask
+{
+    Red = 1 << 0,
+    Green = 1 << 1,
+    Blue = 1 << 2,
+    Alpha = 1 << 3,
+}
+
 /// <summary>
 /// Containts settings that apply color modifiers to each channel.
 /// </summary>
+[Serializable]
 public struct TexturePackingSettings
 {
     /// <summary>
     /// Outputs the inverted color (1.0 - color)
     /// </summary>
     public bool invertColor;
+
+    /// <summary>
+    /// Uses the combined rgb luminance factor.
+    /// </summary>
+    public bool useLuminance;
+
+    /// <summary>
+    /// Remaps the channel.
+    /// </summary>
+    public Vector2 remapRange;
+
+    /// <summary>
+    /// Outputs the selected channel.
+    /// </summary>
+    public TextureChannel channel;
 }
 
 public static class TextureExtension
 {
-    static Material s_PackChannelMaterial = null;
+    static ComputeShader s_PackChannelCs;
 
-    private static Material packChannelMaterial
+    static ComputeShader packChannelCs
     {
         get
         {
-            if (s_PackChannelMaterial == null)
+            if (s_PackChannelCs == null)
             {
-                Shader packChannelShader = Shader.Find("Hidden/PackChannel");
-                if (packChannelShader == null)
-                    return null;
-                
-                s_PackChannelMaterial = new Material(packChannelShader);
+                s_PackChannelCs = Resources.Load<ComputeShader>("PackChannel");
             }
 
-            return s_PackChannelMaterial;
+            return s_PackChannelCs;
         }
     }
 
-    static bool CompressedTextureFormat(TextureFormat format)
+    static readonly int s_RedMap = Shader.PropertyToID("_RedMap");
+    static readonly int s_GreenMap = Shader.PropertyToID("_GreenMap");
+    static readonly int s_BlueMap = Shader.PropertyToID("_BlueMap");
+    static readonly int s_AlphaMap = Shader.PropertyToID("_AlphaMap");
+
+    static readonly int s_RedChannelParams = Shader.PropertyToID("_RedChannelParams");
+    static readonly int s_GreenChannelParams = Shader.PropertyToID("_GreenChannelParams");
+    static readonly int s_BlueChannelParams = Shader.PropertyToID("_BlueChannelParams");
+    static readonly int s_AlphaChannelParams = Shader.PropertyToID("_AlphaChannelParams");
+
+    static readonly int s_Output = Shader.PropertyToID("_Output");
+    static readonly int s_OutputSize = Shader.PropertyToID("_OutputSize");
+
+    public static void PackChannels(this Texture2D mask, Texture2D[] inputTextures, TexturePackingSettings[] settings, GraphicsFormat graphicsFormat, bool srgb, bool mipmaps)
     {
-        //There should be a much better way to work this out, this might not even be an exhaustive list :(
-        return format == TextureFormat.BC4
-            || format == TextureFormat.BC5
-            || format == TextureFormat.BC6H
-            || format == TextureFormat.BC7
-            || format == TextureFormat.DXT1
-            || format == TextureFormat.DXT1Crunched
-            || format == TextureFormat.DXT5
-            || format == TextureFormat.DXT5Crunched;
-    }
-    public static void PackChannels(this Texture2D mask, Texture2D[] textures, TexturePackingSettings[] settings = null, bool generateOnGPU = true)
-    {
-        if (textures == null || textures.Length != 4)
+        if (inputTextures == null || inputTextures.Length != 4)
         {
             Debug.LogError("Invalid parameter to PackChannels. An array of 4 textures is expected");
+            return;
+        }
+
+        if (!packChannelCs)
+        {
+            Debug.LogError("Coudn't find `PackChannels` compute shader.");
+            return;
         }
 
         if (settings == null)
@@ -63,104 +99,56 @@ public static class TextureExtension
             settings = new TexturePackingSettings[4];
             for (int i = 0; i < settings.Length; ++i)
             {
-                settings[i].invertColor = false;
+                settings[i].remapRange = new Vector2(0.0f, 1.0f);
             }
         }
-        
+
         int width = mask.width;
         int height = mask.height;
-        int pixelCount = width * height;
-        bool invalidTextures = false;
 
-        for (int i = 0; i < textures.Length; i++)
+        packChannelCs.SetTexture(0, s_RedMap, inputTextures[0] != null ? inputTextures[0] : Texture2D.blackTexture);
+        packChannelCs.SetTexture(0, s_GreenMap, inputTextures[1] != null ? inputTextures[1] : Texture2D.blackTexture);
+        packChannelCs.SetTexture(0, s_BlueMap, inputTextures[2] != null ? inputTextures[2] : Texture2D.blackTexture);
+        packChannelCs.SetTexture(0, s_AlphaMap, inputTextures[3] != null ? inputTextures[3] : Texture2D.blackTexture);
+
+        packChannelCs.SetVector(s_RedChannelParams, GetShaderChannelParams(settings[0]));
+        packChannelCs.SetVector(s_GreenChannelParams, GetShaderChannelParams(settings[1]));
+        packChannelCs.SetVector(s_BlueChannelParams, GetShaderChannelParams(settings[2]));
+        packChannelCs.SetVector(s_AlphaChannelParams, GetShaderChannelParams(settings[3]));
+
+        var rtForm = GraphicsFormatUtility.GetRenderTextureFormat(graphicsFormat);
+        var rtDesc = new RenderTextureDescriptor(width, height, rtForm, 0)
         {
-            var t = textures[i];
-            if (t != null)
-            {
-                if (!generateOnGPU && !t.isReadable)
-                {
-                    Debug.LogError($"SmartTexture Aborting: {t.name} texture is not readable so we cannot import on CPU. Toogle Read/Write Enable in texture importer. ", t);
-                    invalidTextures = true;
-                }
+            sRGB = srgb,
+            useMipMap = mipmaps,
+#if UNITY_2020_1_OR_NEWER
+            mipCount = mipmaps ? mask.mipmapCount : 1,
+#endif
+            autoGenerateMips = false,
+            enableRandomWrite = true,
+        };
 
-                if (t.width != width || t.height != height)
-                {
-                    Debug.LogWarning($"SmartTexture: {t.name} does not match expected size. This can cause artfacts as the texture will be sampled onto a different size target, mismatches are not advised", t);
-                }
+        var rt = new RenderTexture(rtDesc);
+        rt.Create();
 
-                if (CompressedTextureFormat(t.format))
-                {
-                    Debug.LogWarning($"SmartTexture: {t.name} is already compressed, channel {i} will be double compressed. Please use an uncompressed format, input texture size isn't relevant to the build", t);
-                }
-            }
-        }
-        if (invalidTextures) return;
+        packChannelCs.SetTexture(0, s_Output, rt);
+        packChannelCs.SetVector(s_OutputSize, new Vector4(width, height, 1.0f / width, 1.0f / height));
+        packChannelCs.Dispatch(0, (rt.width + 7) / 8, (rt.height + 7) / 8, 1);
 
-        if (generateOnGPU)
-        {
-            float[] invertColor =
-            {
-                settings[0].invertColor ? 1.0f : 0.0f,
-                settings[1].invertColor ? 1.0f : 0.0f,
-                settings[2].invertColor ? 1.0f : 0.0f,
-                settings[3].invertColor ? 1.0f : 0.0f,
-            };
-            packChannelMaterial.SetTexture("_RedChannel", textures[0] != null ? textures[0] : Texture2D.blackTexture);
-            packChannelMaterial.SetTexture("_GreenChannel", textures[1] != null ? textures[1] : Texture2D.blackTexture);
-            packChannelMaterial.SetTexture("_BlueChannel", textures[2] != null ? textures[2] : Texture2D.blackTexture);
-            packChannelMaterial.SetTexture("_AlphaChannel", textures[3] != null ? textures[3] : Texture2D.blackTexture);
-            packChannelMaterial.SetVector("_InvertColor", new Vector4(invertColor[0], invertColor[1], invertColor[2], invertColor[3]));
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture.active = rt;
 
-            var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32,
-                RenderTextureReadWrite.Linear);
-            RenderTexture previous = RenderTexture.active;
-            RenderTexture.active = rt;
+        mask.ReadPixels(new Rect(0, 0, width, height), 0, 0, mipmaps);
+        mask.Apply(mipmaps);
 
-            CommandBuffer cmd = new CommandBuffer();
-            cmd.Blit(null, rt, packChannelMaterial);
-            cmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
-            Graphics.ExecuteCommandBuffer(cmd);
-            mask.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-            mask.Apply();
+        RenderTexture.active = previous;
+        rt.Release();
+    }
 
-            RenderTexture.active = previous;
-            RenderTexture.ReleaseTemporary(rt);
-        }
-        else
-        {
-            Color[][] pixels = 
-            {
-                textures[0] != null ? textures[0].GetPixels(0) : null,
-                textures[1] != null ? textures[1].GetPixels(0) : null,
-                textures[2] != null ? textures[2].GetPixels(0) : null,
-                textures[3] != null ? textures[3].GetPixels(0) : null,
-            };
-            
-            Color[] maskPixels = new Color[pixelCount];
-            for (int i = 0; i < pixelCount; ++i)
-            {
-                float r = (textures[0] != null) ? pixels[0][i].r : 0.0f;
-                float g = (textures[1] != null) ? pixels[1][i].r : 0.0f;
-                float b = (textures[2] != null) ? pixels[2][i].r : 0.0f;
-                float a = (textures[3] != null) ? pixels[3][i].r : 0.0f;
-
-                if (settings[0].invertColor)
-                    r = 1.0f - r;
-
-                if (settings[1].invertColor)
-                    g = 1.0f - g;
-
-                if (settings[2].invertColor)
-                    b = 1.0f - b;
-
-                if (settings[3].invertColor)
-                    a = 1.0f - a;
-
-                maskPixels[i] = new Color(r, g, b, a);
-            }
-
-            mask.SetPixels(maskPixels, 0);
-            mask.Apply();
-        }
+    static Vector4 GetShaderChannelParams(in TexturePackingSettings settings)
+    {
+        float channel = settings.useLuminance ? 5 : (int) settings.channel + 1;
+        channel *= (settings.invertColor ? -1.0f : 1.0f);
+        return new Vector4(channel, settings.remapRange.x, settings.remapRange.y, 0.0f);
     }
 }
