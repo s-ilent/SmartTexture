@@ -1,16 +1,16 @@
 {
-    "name": "Phillira.SmartTexture.Editor",
-    "references": [
-        "Philira.SmartTexture.Runtime"
-    ],
-    "optionalUnityReferences": [],
-    "includePlatforms": [
-        "Editor"
-    ],
-    "excludePlatforms": [],
-    "allowUnsafeCode": false,
-    "overrideReferences": true,
-    "precompiledReferences": [],
-    "autoReferenced": false,
-    "defineConstraints": []
+  "name": "Phillira.SmartTexture.Editor",
+  "references": [
+    "Philira.SmartTexture.Runtime"
+  ],
+  "optionalUnityReferences": [],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": []
 }
